@@ -1,22 +1,30 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
-import aiohttp
 import asyncio
+import aiohttp
 from langdetect import detect
 from datetime import datetime, time
-import threading
+import os
 
 app = Flask(__name__)
 
-# Replace these with your own values
-API_ID = '11862100'
-API_HASH = '6b86628d4a2b1b984e5c652894a45018'
-SESSION_STRING = '1ApWapzMBuyCl70tR5djQ9QRRW7OqQE-gWJOswKgsfZRRBbP0BnUca1cZB-_XqtmZBxL4Jk8lqkFdLCWSW6IwPUCnLk9XA1zo2lYNr81hdcYAv5VN2mgWZIyWDszdKIk78RaksSBKguZtK0177TJfeBceuOZ7Hv63lbBkirowXkf7V8IafhUnf6fRpnw03h8ZONZCR2b5jc3X8MLVwBy1r6hMlHKt6JUr4KL8wVXNjeZdOzI4YxSTMrFpH4lGSUNCWS4S4t9HCRwxE35feN1m9kMhBxBzskviovGZlHI48vse6fSpd8FmaQGt7Ic9UzwABPpbRP0U9ggQIyEA64L9LLLJpkPMkO0='
-OPENROUTER_API_KEY = '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'
+# Environment variables
+API_ID = int(os.environ['API_ID'])
+API_HASH = os.environ['API_HASH']
+SESSION_STRING = os.environ['SESSION_STRING']
+OPENROUTER_API_KEY = os.environ['OPENROUTER_API_KEY']
 
-# Initialize Telegram client
+# Telegram client
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
+
+SCHOOL_START = time(8, 30)
+SCHOOL_END = time(17, 30)
+WEEKDAYS = [0, 1, 2, 3, 4]
+
+def is_school_time():
+    now = datetime.now()
+    return now.weekday() in WEEKDAYS and SCHOOL_START <= now.time() <= SCHOOL_END
 
 async def simulate_typing(event):
     async with client.action(event.chat_id, 'typing'):
@@ -28,7 +36,6 @@ async def generate_ai_response(prompt, language):
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
     }
-
     if language == 'uz':
         system_message = "Siz o'zbek yigitisi sifatida javob berasiz. Tabiiy va odatiy tarzda gapling."
     elif language == 'ru':
@@ -50,59 +57,42 @@ async def generate_ai_response(prompt, language):
             async with session.post(url, headers=headers, json=data) as response:
                 result = await response.json()
                 return result['choices'][0]['message']['content'].strip()
-    except Exception as e:
-        return f"Oops, something went wrong. Let's talk about something else!"
+    except Exception:
+        return "Oops, something went wrong."
 
-@client.on(events.NewMessage(incoming=True))
-async def handle_message(event):
-    await event.message.mark_read()
-    sender = await event.get_sender()
-    message_text = event.message.message
-
-    print(f"Received message from {sender.username}: {message_text}")
-
-    try:
-        language = detect(message_text)
-    except:
-        language = 'uz'
-
-    if language not in ['uz', 'ru', 'en']:
-        language = 'uz'
-
-    await simulate_typing(event)
-    ai_response = await generate_ai_response(message_text, language)
-    await event.reply(ai_response)
-
-async def keep_online():
-    while True:
-        try:
-            await client.get_me()
-            print("Still online...")
-            await asyncio.sleep(60)
-        except Exception as e:
-            print(f"Error: {e}. Retrying in 10 seconds...")
-            await asyncio.sleep(10)
-
-def run_telegram_client():
+@app.route('/api/telegram', methods=['GET'])
+def telegram():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    
-    with client:
-        client.loop.run_until_complete(client.start())
-        print("Telegram client started")
-        client.loop.run_until_complete(keep_online())
-        client.run_until_disconnected()
+    loop.run_until_complete(run_bot())
+    return "Bot checked messages and replied (if needed)."
 
-@app.route('/')
-def home():
-    return "Telegram AI Bot is running"
+async def run_bot():
+    await client.start()
+    @client.on(events.NewMessage(incoming=True))
+    async def handle_message(event):
+        await event.message.mark_read()
+        sender = await event.get_sender()
+        message_text = event.message.message
+        print(f"Received message from {sender.username}: {message_text}")
 
-@app.route('/start_bot', methods=['GET'])
-def start_bot():
-    # Start the Telegram client in a separate thread
-    thread = threading.Thread(target=run_telegram_client, daemon=True)
-    thread.start()
-    return jsonify({"status": "Bot started"})
+        if is_school_time():
+            await event.reply("Hozir maktabdaman, keyinroq gaplashamiz!")
+            return
+
+        try:
+            language = detect(message_text)
+        except:
+            language = 'uz'
+
+        if language not in ['uz', 'ru', 'en']:
+            language = 'uz'
+
+        await simulate_typing(event)
+        ai_response = await generate_ai_response(message_text, language)
+        await event.reply(ai_response)
+
+    await client.disconnect()
 
 if __name__ == '__main__':
-    app.run()
+    app.run(host='0.0.0.0', port=3000)
